@@ -117,6 +117,8 @@ def ivhdfe(df, output, endog_vars,
     std = std[idxr,:].T
     
     return {
+        'nobs': N,
+        'covariates': covariates,
         'beta': beta,
         'se': std,
         'f_stats': f_stats,
@@ -127,5 +129,4 @@ def ivhdfe(df, output, endog_vars,
         'sigma2': sigma2,
         'fitted': fitted,
         'resid': resid,
-        'covariates': covariates,
     }

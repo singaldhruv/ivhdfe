@@ -8,11 +8,8 @@ class PanelData:
                 instruments=[], controls=[], 
                 fixed_effects=[], se_clusters=[],
                 skip_constant=False):
-        df = orig_df.copy()
-        
+        df = orig_df
         assert isinstance(df, pd.DataFrame), "df must be a Pandas DataFrame"
-        self.orig_df = df.copy()
-
         # Check continuous columns
         if instruments == []:
             cts_col_types = ['covariate', 'control']
@@ -31,14 +28,15 @@ class PanelData:
                 controls.remove(col[0])
         
         # Check categorical columns and store univariate levels 
-        df, uni_cat_cols, uni_cat_levels, fe_cols, clust_cols = check_cat_cols(df, fixed_effects, se_clusters)
+        df, uni_cat_cols, fe_cols, clust_cols = check_cat_cols(df, fixed_effects, se_clusters)
         self.uni_cat_cols = uni_cat_cols
-        self.uni_cat_levels = uni_cat_levels
         
+        
+        # Subset to useful columns
         # Drop observations with NA or Inf in any of the useful columns
-        for col in [output] + cts_cols + uni_cat_cols:
-            df[col] = df[col].replace([np.inf,-np.inf], np.nan)
-            df = df.dropna(subset=[col])
+        useful_cols = [output] + cts_cols + uni_cat_cols
+        df = df[useful_cols].copy()
+        df = df.replace([np.inf,-np.inf], np.nan).dropna().reset_index(drop=True)
         
         # Add a constant if needed 
         if (fe_cols == []) and (skip_constant == False):
@@ -51,11 +49,9 @@ class PanelData:
         while any_change:
             any_change = False
             prev_size = df.shape[0]
-            
             df, cts_cols = check_collinear(df, cts_cols)
-            df, clust_column_labels, clust_column_levels = create_cat_levels(df, clust_cols, 'clust', remove_singletons=False)
-            df, fe_column_labels, fe_column_levels = create_cat_levels(df, fe_cols, 'fe', remove_singletons=True)
-            
+            df, clust_column_labels = create_cat_levels(df, clust_cols, 'clust', remove_singletons=False)
+            df, fe_column_labels = create_cat_levels(df, fe_cols, 'fe', remove_singletons=True)
             if df.shape[0] < prev_size:
                 any_change = True
         
@@ -87,17 +83,16 @@ class PanelData:
         if len(self.instruments) > 0:
             assert len(self.instruments) >= len(self.endog_vars), 'Under-identified specification'
         
-        self.initialize_fixed_effects(fe_column_labels, fe_column_levels)
-        self.initialize_clusters(clust_column_labels, clust_column_levels)
+        self.initialize_fixed_effects(fe_column_labels)
+        self.initialize_clusters(clust_column_labels)
         
     #################
     # Fixed effects #
     ################# 
-    def initialize_fixed_effects(self, fe_column_labels, fe_column_values):
+    def initialize_fixed_effects(self, fe_column_labels):
         # This stores the FE column names
         self.fixed_effects = fe_column_labels
         # This stores the "actual" categorical values for each FE column, which can be mapped to the univariate levels
-        self.cat_values_FE = fe_column_values
         
         # Terminology: 
         # (group === column)
@@ -149,7 +144,6 @@ class PanelData:
             c_removed_levels += self.redundant_FE[c_idx]
             if c_removed_levels == self.levels_FE[c_idx]:
                 del self.fixed_effects[c_idx]
-                del self.cat_values_FE[c_idx]
                 self.FE_matrix = np.delete(self.FE_matrix, c_idx, axis=1)
                 self.groups_FE = self.FE_matrix.shape[1]
                 self.levels_FE = np.max(self.FE_matrix, axis=0) + 1
@@ -172,9 +166,8 @@ class PanelData:
     ###############
     # SE clusters #
     ############### 
-    def initialize_clusters(self, clust_column_labels, clust_column_levels):
+    def initialize_clusters(self, clust_column_labels):
         self.se_clusters = clust_column_labels
-        self.cat_values_clusters = clust_column_levels
         self.clust_df = self.df[self.se_clusters].copy()
         
         if (len(self.se_clusters) > 0) and (self.N_FE > 0):
@@ -201,6 +194,8 @@ class PanelData:
             nested_dof -= 1 if (nested_dof == self.N_FE) else 0
             self.nested_resid_dof = nested_dof
             self.resid_dof += nested_dof
+        else:
+            self.nested_resid_dof = 0
             
 ##################################
 # Helpers for continuous columns #
@@ -208,7 +203,6 @@ class PanelData:
 def check_cts_cols(df, output, combined_cts_cols, cts_col_types):
     assert isinstance(output, str), f"Output {output} is not a string"
     assert (output in df.columns), f"Output {output} is not a data column"
-    
     cts_cols = []
     dup_cols = []
     for curr_cts_cols, curr_cols_type in zip(combined_cts_cols, cts_col_types):
@@ -282,13 +276,11 @@ def check_cat_cols(df, fixed_effects, se_clusters):
         else:
             print(f'Skipping duplicate cluster: {curr_clust_cols}')
         
-    uni_cat_levels = {}
     for col in uni_cat_cols:
         df[col] = df[col].astype('category')
-        uni_cat_levels[col] = df[col].cat.categories
         df[col] = df[col].cat.codes
         
-    return df, uni_cat_cols, uni_cat_levels, fe_cols, clust_cols
+    return df, uni_cat_cols, fe_cols, clust_cols
 
 # Find levels for the categorical column fine_col which
 # partition some levels in categorical column coarse_col, that is:
@@ -322,24 +314,30 @@ def find_nested_levels(fine_col, coarse_col):
 # Factorizes a column or list of columns 
 # curr_cat can be a tuple specifying interaction of categorical variables
 def factorize(df, curr_cat, cat_tag):
-    codes, curr_cat_levels = pd.factorize(df[curr_cat].to_records(index=False))
     curr_cat_label = f"{cat_tag}_{'#'.join(curr_cat)}"
+    df[curr_cat_label] = np.zeros(df.shape[0], dtype=np.dtype('uint64'))
+    possible_max = np.iinfo(np.dtype('uint64')).max
+    running_max = 1
+    for col in curr_cat:
+        col_max = df[col].max()
+        running_max *= col_max
+        assert running_max < possible_max, f"Interacted levels in {curr_cat} are too numerous"
+        df[curr_cat_label] = df[curr_cat_label]*col_max+ df[col]
+    codes, _ = pd.factorize(df[curr_cat_label])
     df[curr_cat_label] = codes
-    return df, curr_cat_label, curr_cat_levels
+    return df, curr_cat_label
 
 def create_cat_levels(df, curr_cat_cols, cat_tag='cat', remove_singletons=True):
     cat_labels = []
-    cat_levels = []
     for curr_cat in curr_cat_cols:
-        df, curr_cat_label, curr_cat_levels = factorize(df, curr_cat, cat_tag)
+        df, curr_cat_label = factorize(df, curr_cat, cat_tag)
         
         # Remove singletons and refactorize
         if remove_singletons: 
-            df['curr_count'] = df.groupby(curr_cat_label)[curr_cat_label].transform('count')
-            df = df.loc[df['curr_count'] > 1,:]
-            df = df.drop('curr_count', axis=1)
-            df, curr_cat_label, curr_cat_levels = factorize(df, curr_cat, cat_tag)
+            curr_counts = df[curr_cat_label].value_counts()
+            non_singletons = curr_counts[curr_counts > 1].index
+            df = df.loc[df[curr_cat_label].isin(non_singletons), :].reset_index(drop=True)
+            df, curr_cat_label = factorize(df, curr_cat, cat_tag)
 
         cat_labels.append(curr_cat_label)
-        cat_levels.append(curr_cat_levels)
-    return df, cat_labels, cat_levels
+    return df, cat_labels

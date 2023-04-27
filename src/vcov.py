@@ -37,7 +37,7 @@ def calc_vcov_hc1(gram_inv, reg_covariates, sr_resid, resid_dof):
 def calc_meat_oneway(reg_covariates, resid, clust_df, oneway_dof_adj=True):
     moments = np.multiply(reg_covariates, resid)
     
-    moments_df, clust_col, _ = factorize(clust_df.copy(), clust_df.columns, 'oneway')
+    moments_df, clust_col = factorize(clust_df.copy(), clust_df.columns, 'oneway')
     moments_cols = []
     for k in range(moments.shape[1]):
         moments_df[f'moments_{k}'] = moments[:,k]
