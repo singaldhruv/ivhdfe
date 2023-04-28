@@ -5,6 +5,8 @@ from panel_data import PanelData
 from solvers import ols_solve, tsls_solve, fe_solve
 from vcov import calc_vcov_iid, calc_vcov_hc1, calc_vcov_clust_multiway, calc_std
 
+import time
+
 def ivhdfe(df, output, endog_vars,
         instruments=[],
         controls=[],
@@ -12,9 +14,9 @@ def ivhdfe(df, output, endog_vars,
         se_clusters=[],
         se='iid',
         skip_constant=False):
-    
     # Main bottleneck: This is by far the slowest part
-    # TODO: Can speed up by initializing once, and reusing
+    # TODO: Can speed up by initializing once, and reusingp
+    start_time = time.time()
     panel = PanelData(df,
         output=output, 
         endog_vars=endog_vars,
@@ -23,6 +25,8 @@ def ivhdfe(df, output, endog_vars,
         fixed_effects=fixed_effects,
         se_clusters=se_clusters,
         skip_constant=skip_constant)
+    print(f"Time to initialize panel: {(time.time() - start_time)*1000:.4f} ms")
+    start_time = time.time()
     
     N = panel.N
 
@@ -62,9 +66,12 @@ def ivhdfe(df, output, endog_vars,
             ret_vals += (WX, None)
         else:
             ret_vals = fe_solve(WX, y, fe_params)
-    beta, gram_inv, fitted, resid, reg_covariates, y_demeaned = ret_vals
+    print(f"Time for regression: {(time.time() - start_time)*1000:.4f} ms")
+    start_time = time.time()
     
+    beta, gram_inv, fitted, resid, reg_covariates, y_demeaned = ret_vals
     sr_resid = np.power(resid,2)
+    
     rss = np.sum(sr_resid)
             
     if fe_params is not None:
@@ -115,6 +122,8 @@ def ivhdfe(df, output, endog_vars,
             covariates = covariates + panel.controls
     beta = beta[idxr,:].T
     std = std[idxr,:].T
+    print(f"Time for std errors: {(time.time() - start_time)*1000:.4f} ms")
+    start_time = time.time()
     
     return {
         'nobs': N,

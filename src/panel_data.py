@@ -31,7 +31,6 @@ class PanelData:
         df, uni_cat_cols, fe_cols, clust_cols = check_cat_cols(df, fixed_effects, se_clusters)
         self.uni_cat_cols = uni_cat_cols
         
-        
         # Subset to useful columns
         # Drop observations with NA or Inf in any of the useful columns
         useful_cols = [output] + cts_cols + uni_cat_cols
@@ -319,7 +318,7 @@ def factorize(df, curr_cat, cat_tag):
     possible_max = np.iinfo(np.dtype('uint64')).max
     running_max = 1
     for col in curr_cat:
-        col_max = df[col].max()
+        col_max = (df[col].max()+1)
         running_max *= col_max
         assert running_max < possible_max, f"Interacted levels in {curr_cat} are too numerous"
         df[curr_cat_label] = df[curr_cat_label]*col_max+ df[col]
