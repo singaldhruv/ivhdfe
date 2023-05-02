@@ -1,9 +1,9 @@
 import pandas as pd
 import numpy as np
 
-from src.panel_data import PanelData
-from src.solvers import tsls_solve, fe_solve
-from src.vcov import calc_vcov_iid, calc_vcov_hc1, calc_vcov_clust_multiway, calc_std
+from panel_data import PanelData
+from solvers import tsls_solve, fe_solve
+from vcov import calc_vcov, calc_std
 
 def ivhdfe(df, output, 
         endog_vars=[],
@@ -11,8 +11,9 @@ def ivhdfe(df, output,
         controls=[],
         fixed_effects=[],
         se_clusters=[],
-        se='iid',
-        skip_constant=False):
+        vcov_type='iid',
+        skip_constant=False,
+        verbose=True):
     
     panel = PanelData(df,
         output=output, 
@@ -21,7 +22,8 @@ def ivhdfe(df, output,
         controls=controls,
         fixed_effects=fixed_effects,
         se_clusters=se_clusters,
-        skip_constant=skip_constant)
+        skip_constant=skip_constant,
+        verbose=verbose)
     
     N = panel.N
     X = panel.X
@@ -37,14 +39,22 @@ def ivhdfe(df, output,
     
     if len(panel.se_clusters) > 0:
         # Overrides any value for se argument
-        vcov_fun = lambda gram_inv, reg_covariates, resid, resid_dof: calc_vcov_clust_multiway(gram_inv, reg_covariates, resid, resid_dof, panel.clust_df)
-    elif se == 'iid':
-        vcov_fun = lambda gram_inv, reg_covariates, resid, resid_dof: calc_vcov_iid(gram_inv, resid, resid_dof)
-    elif se == 'robust':
-        vcov_fun = lambda gram_inv, reg_covariates, resid, resid_dof: calc_vcov_hc1(gram_inv, reg_covariates, resid, resid_dof)
+        vcov_params = {
+            'clust_df': panel.clust_df,
+            'clust_dof_adj': 'min'
+        }
+        if verbose:
+            print('Standard errors are clustered')
+    elif vcov_type == 'iid':
+        vcov_params = {'vcov_type': 'iid'}
+        if verbose:
+            print('Standard errors assume homoskedasticity (iid)')
+    elif vcov_type == 'robust':
+        vcov_params = {'vcov_type': 'robust'}
+        if verbose:
+            print('Standard errors assume heteroskedasticity (HC1)')
     else:
         raise ValueError('If clusters are not specified, se must be iid or robust') 
-
 
     if (panel.fixed_effects != []):
         fe_params = {
@@ -62,7 +72,7 @@ def ivhdfe(df, output,
     if (panel.instruments != []):
         # Testing for weak instruments needs these
         iv_params = {
-            'vcov_fun': vcov_fun,
+            'vcov_params': vcov_params,
             'resid_dof': resid_dof,
         }
         ret_vals = tsls_solve(X, W, Z, y, iv_params, fe_params)
@@ -103,7 +113,7 @@ def ivhdfe(df, output,
         std = None
         covariates = None
     else:
-        vcov = vcov_fun(gram_inv, reg_covariates, resid, resid_dof)
+        vcov = calc_vcov(gram_inv, reg_covariates, resid, resid_dof, vcov_params)
         std = calc_std(vcov)
 
         # Reorder output coefficients and standard errors

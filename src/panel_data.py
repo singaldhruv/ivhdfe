@@ -5,7 +5,8 @@ class PanelData:
     def __init__(self, orig_df, output=None, endog_vars=[], 
                 instruments=[], controls=[], 
                 fixed_effects=[], se_clusters=[],
-                skip_constant=False):
+                skip_constant=False,
+                verbose=True):
         df = orig_df
         assert isinstance(df, pd.DataFrame), "df must be a Pandas DataFrame"
         # Check continuous columns
@@ -16,7 +17,7 @@ class PanelData:
             cts_col_types = ['covariate', 'instrument', 'control']
             cts_cols = [endog_vars, instruments, controls]
             
-        df, cts_cols, dup_cols = check_cts_cols(df, output, cts_cols, cts_col_types)
+        df, cts_cols, dup_cols = check_cts_cols(df, output, cts_cols, cts_col_types, verbose)
         for col in dup_cols:
             if col[1] == 'covariate':
                 endog_vars.remove(col[0])
@@ -26,25 +27,27 @@ class PanelData:
                 controls.remove(col[0])
         
         # Check categorical columns and store univariate levels 
-        df, uni_cat_cols, fe_cols, clust_cols = check_cat_cols(df, fixed_effects, se_clusters)
+        df, uni_cat_cols, fe_cols, clust_cols = check_cat_cols(df, fixed_effects, se_clusters, verbose)
         self.uni_cat_cols = uni_cat_cols
         
         # Check if any design column is constant and drop it
         constant_cols = []
-        for col in cts_cols + uni_cat_cols:
-                if np.isclose(df[col].std() / df[col].mean(), 0):
-                    constant_cols.append(col)
-                    if col in cts_cols:
-                        cts_cols.remove(col)
-                    if col in uni_cat_cols:
-                        uni_cat_cols.remove(col)
-                    if col in fe_cols:
-                        fe_cols.remove(col)
-                    if col in clust_cols:
-                        clust_cols.remove(col)
+        for col in cts_cols: 
+            if np.isclose(df[col].std() / df[col].mean(), 0):
+                constant_cols.append(col)
+                cts_cols.remove(col)
+        for col in uni_cat_cols:
+            if len(df[col].unique()) == 1:
+                constant_cols.append(col)
+                uni_cat_cols.remove(col)
+                if col in fe_cols:
+                    fe_cols.remove(col)
+                if col in clust_cols:
+                    clust_cols.remove(col)
         if constant_cols != []:
             df = df.drop(constant_cols, axis=1)
-            print(f'Dropped constant columns: {" ".join(constant_cols)}')
+            if verbose:
+                print(f'Dropped constant columns: {" ".join(constant_cols)}')
             
         # Subset to useful columns
         useful_cols = [output] + cts_cols + uni_cat_cols
@@ -57,10 +60,9 @@ class PanelData:
         
         temp_size = df.shape[0]
         df = df.replace([np.inf,-np.inf], np.nan).dropna().reset_index(drop=True)
-        if temp_size > df.shape[0]:
+        if verbose and (temp_size > df.shape[0]):
             print(f'Dropped {temp_size - df.shape[0]:,d} observations with NA or Inf')
         
-
         # Add a constant if needed 
         if (fe_cols == []) and (skip_constant == False):
             df['_constant'] = 1
@@ -73,16 +75,15 @@ class PanelData:
         while any_change:
             any_change = False
             prev_size = df.shape[0]
-            df, cts_cols = make_collinear(df, cts_cols)
+            df, cts_cols = make_collinear(df, cts_cols, verbose)
             df, clust_column_labels = create_cat_levels(df, clust_cols, 'clust', drop_singletons=False)
             temp_size = df.shape[0]
             df, fe_column_labels = create_cat_levels(df, fe_cols, 'fe', drop_singletons=True)
             singletons_dropped += (temp_size - df.shape[0])
             if df.shape[0] < prev_size:
                 any_change = True
-        if singletons_dropped > 0:
+        if verbose and (singletons_dropped > 0):
             print(f'Dropped {singletons_dropped:,d} singleton observations')
-        print(f'Final number of observations: {df.shape[0]:,d}')
         
         if len(cts_cols) + len(fe_cols) == 0:
             raise ValueError('No covariates or fixed effects specified')
@@ -115,18 +116,37 @@ class PanelData:
         if len(self.instruments) > 0:
             assert len(self.instruments) >= len(self.endog_vars), 'Under-identified specification'
             
-        self.initialize_fixed_effects(fe_column_labels)
+        self.initialize_fixed_effects(fe_column_labels, verbose)
         self.initialize_clusters(clust_column_labels)
-        for fe_col in fe_column_labels:
-            print(fe_col, self.levels_FE[self.fixed_effects.index(fe_col)])
+
+        if verbose:
+            print(f'Final number of observations: {df.shape[0]:,d}')
+            if len(fe_column_labels) > 0:
+                max_label_len = max([len(label) for label in fe_column_labels])
+                print_widths = [max_label_len+4, 15, 15]
+                print_values = [['Fixed Effect', 'Levels', 'Redundant']]
+                for fe_col in fe_column_labels:
+                    print_values.append([
+                        fe_col,
+                        f'{self.levels_FE[self.fixed_effects.index(fe_col)]:,d}',
+                        f'{self.redundant_FE[self.fixed_effects.index(fe_col)]:,d}'
+                    ])
+                if len(clust_column_labels) > 0:
+                    print_values[0].append('Nested')
+                    print_widths.append(15)
+                    for ii, fe_col in enumerate(fe_column_labels):
+                        print_values[ii+1].append(f'{self.nested_FE[self.fixed_effects.index(fe_col)]:,d}')
+                for ii, row in enumerate(print_values):
+                    print(''.join([str(val).ljust(width) for val, width in zip(row, print_widths)]))
+                    if (ii == 0) or (ii == len(print_values)-1):
+                        print('-' * sum(print_widths))
         
     #################
     # Fixed effects #
     ################# 
-    def initialize_fixed_effects(self, fe_column_labels):
+    def initialize_fixed_effects(self, fe_column_labels, verbose=True):
         # This stores the FE column names
         self.fixed_effects = fe_column_labels
-        # This stores the "actual" categorical values for each FE column, which can be mapped to the univariate levels
         
         # Terminology: 
         # (group === column)
@@ -164,7 +184,7 @@ class PanelData:
                 self.levels_FE = np.max(self.FE_matrix, axis=0) + 1
                 self.redundant_FE = np.delete(self.redundant_FE, c_idx)
                 groups_dropped.append(tuple(fe_column_labels[c_idx][3:].split("#")))
-        if len(groups_dropped) > 0:
+        if verbose and (len(groups_dropped) > 0):
             print(f'Dropped redundant FE groups: {"_".join(groups_dropped)}')
         
         # Number of identified FE levels (degrees of freedom lost)
@@ -189,21 +209,25 @@ class PanelData:
         self.clust_df = self.df[self.se_clusters].copy()
         
         self.nested_resid_dof = 0
-        if (len(self.se_clusters) > 0) and (self.N_FE > 0):
-            # Add back the degrees of freedom to the model for 
-            # FE levels which are nested within some cluster
-            nested_FE = [set([]) for _ in range(self.groups_FE)]
+        # Add back the degrees of freedom to the model for 
+        # FE levels which are nested within some cluster
+        if (len(self.se_clusters) > 0) and (len(self.fixed_effects) > 0):
+            self.nested_FE = np.zeros((self.groups_FE,), dtype=int)
+            nested_levels_FE = [set([]) for _ in range(self.groups_FE)]
             for clust_c in self.clust_df.columns:
                 clust_array = self.clust_df[[clust_c]].copy()
                 for fe_c in range(self.groups_FE):
                     nest_df = find_nested_levels(self.FE_matrix[:,fe_c][:,np.newaxis], clust_array)
                     curr_nested_fe = set(nest_df['fine'].unique())
-                    nested_FE[fe_c] = nested_FE[fe_c] | curr_nested_fe
+                    nested_levels_FE[fe_c] = nested_levels_FE[fe_c] | curr_nested_fe
             for fe_c in range(self.groups_FE):
-                fe_c_nested_dof = len(nested_FE[fe_c])
+                fe_c_nested_dof = len(nested_levels_FE[fe_c])
                 # For each FE group, add back lost degrees of freedom = 
                 # min(nested levels, # non-redundant levels)
-                self.nested_resid_dof += min(fe_c_nested_dof, self.levels_FE[fe_c] - self.redundant_FE[fe_c])
+                fc_c_nested_dof = min(fe_c_nested_dof, self.levels_FE[fe_c] - self.redundant_FE[fe_c])
+                self.nested_FE[fe_c] = fc_c_nested_dof
+                
+            self.nested_resid_dof = self.nested_FE.sum()
             # If all FE levels are nested within some cluster, remove a degree of freedom for the intercept
             self.nested_resid_dof -= 1 if (self.nested_resid_dof == self.N_FE) else 0
             
@@ -212,7 +236,7 @@ class PanelData:
 ##################################
 # Helpers for continuous columns #
 ##################################
-def check_cts_cols(df, output, combined_cts_cols, cts_col_types):
+def check_cts_cols(df, output, combined_cts_cols, cts_col_types, verbose=True):
     assert isinstance(output, str), f"Output {output} is not a string"
     assert (output in df.columns), f"Output {output} is not a data column"
     cts_cols = []
@@ -227,11 +251,12 @@ def check_cts_cols(df, output, combined_cts_cols, cts_col_types):
             if col not in cts_cols:
                 cts_cols.append(col)
             else:
-                print(f'Skipping duplicated {curr_cols_type}: {col}')
+                if verbose:
+                    print(f'Skipping duplicated {curr_cols_type}: {col}')
                 dup_cols.append((col, curr_cols_type))
     return df, cts_cols, dup_cols
 
-def make_collinear(df, cts_cols):
+def make_collinear(df, cts_cols, verbose=True):
     if len(cts_cols) == 0:
         return df, cts_cols
     orthogonal_cols = [cts_cols[0]]
@@ -246,17 +271,19 @@ def make_collinear(df, cts_cols):
             orthogonal_cols.append(col)
             full_rank_matrix = temp_matrix
             
-    if collinear_cols != []: 
+    if verbose and (collinear_cols != []): 
+        df = df.drop(collinear_cols, axis=1)
         print(f'Dropped collinear: {" ".join(collinear_cols)}')
-    return df.drop(collinear_cols, axis=1), orthogonal_cols
+    return df, orthogonal_cols
 
 ###################################
 # Helpers for categorical columns #
 ###################################
-def check_cat_cols(df, fixed_effects, se_clusters):
+def check_cat_cols(df, fixed_effects, se_clusters, verbose=True):
     uni_cat_cols = []
     
     fe_cols = []
+    dup_cols = [] 
     assert isinstance(fixed_effects, list), f"Fixed effects {fixed_effects} is not a list"
     for curr_fe_cols in fixed_effects:
         if not isinstance(curr_fe_cols, tuple):
@@ -272,9 +299,12 @@ def check_cat_cols(df, fixed_effects, se_clusters):
         if curr_fe_cols not in fe_cols:
             fe_cols.append(curr_fe_cols)
         else:
-            print(f'Skipping duplicate FE: {curr_fe_cols}')
+            dup_cols.append(curr_fe_cols)
+    if verbose and (dup_cols != []):
+        print(f'Skipping duplicate FEs: {" ".join(dup_cols)}')
         
     clust_cols = [] 
+    dup_cols = [] 
     assert isinstance(se_clusters, list), f"SE clusters {se_clusters} is not a list"
     for curr_clust_cols in se_clusters:
         if not isinstance(curr_clust_cols, tuple):
@@ -290,7 +320,9 @@ def check_cat_cols(df, fixed_effects, se_clusters):
         if curr_clust_cols not in clust_cols:
             clust_cols.append(curr_clust_cols)
         else:
-            print(f'Skipping duplicate cluster: {curr_clust_cols}')
+            dup_cols.append(curr_clust_cols)
+    if verbose and (dup_cols != []):
+        print(f'Skipping duplicate clusters: {" ".join(curr_clust_cols)}')
         
     return df, uni_cat_cols, fe_cols, clust_cols
 
