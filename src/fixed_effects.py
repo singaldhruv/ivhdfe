@@ -14,7 +14,6 @@ def sum_FE(fitted_FE, FE_matrix, groups_FE, levels_FE, c_exclude=None):
         c_start_idx += c_size
     return obs_sum_FE
 
-# Bottleneck: this function is called a lot
 # Assumes Gaussian/OLS: optimal FE = demeaned within each level
 # Given mu and FE values for all other groups, find optimal FE values for the target FE group
 def optimal_single_FE(y, fitted_FE, c_target, FE_matrix, groups_FE, levels_FE, obs_levels_FE): 
@@ -49,10 +48,8 @@ def ironstuck_iteration(y, prev_fitted_FE, FE_matrix, groups_FE, levels_FE, obs_
     dot_delta_f_delta_sr = np.dot(np.squeeze(delta_f), np.squeeze(delta_sr))
     return (ff - (dot_delta_f_delta_sr/norm_delta_sr**2) * delta_f)
 
-# Assumes Gaussian/OLS: y here is (y - beta @ X), which need not be the summary stat in non-Gaussian cases
 # Optimal FE values give y 
-# Uses concentration of likelihood given y and mu
-# Returns the values of FE levels as gamma_cw 
+# Assumes Gaussian/OLS: (y - X@beta) need not be the summary stat in non-Gaussian cases
 # Uses the Irons-Tuck algorithm
 def demean_FE(y, FE_matrix, groups_FE, levels_FE, obs_levels_FE, init_fitted_FE, tol=1e-4, max_iter=1000):
     prev_fitted_FE = np.concatenate(init_fitted_FE)

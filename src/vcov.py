@@ -4,25 +4,20 @@ import pandas as pd
 import itertools
 
 from panel_data import factorize
+from linalg_helpers import make_matrix_psd
 
 def calc_std(vcov):
-    if np.ndim(vcov) == 0:
-        vcov = np.reshape(vcov, (1,1))
-    # Makes a vcov positive definite by clipping negative eigenvalues to 0
-    w, a = np.linalg.eig(vcov)
-    if np.any(w < 0):
-        vcov = a @ np.diag(np.maximum(w,np.zeros_like(w))) @ np.linalg.inv(a)
     std = np.sqrt(np.diag(vcov))
     std = np.reshape(std, (len(std),1))
     return std
 
-def calc_vcov_iid(gram_inv, rss, resid_dof):
-    return (rss/resid_dof) * gram_inv
+def calc_vcov_iid(gram_inv, resid, resid_dof):
+    return make_matrix_psd((np.sum(np.power(resid, 2))/resid_dof) * gram_inv)
 
-# Bottleneck: Loop is slow (still way faster than matrix multiplication way)
-def calc_vcov_hc1(gram_inv, reg_covariates, sr_resid, resid_dof):
-    N = sr_resid.shape[0]
+def calc_vcov_hc1(gram_inv, reg_covariates, resid, resid_dof):
+    N = resid.shape[0]
     K = reg_covariates.shape[1]
+    sr_resid = np.power(resid, 2)
     
     vcov_hc0 = np.zeros((K,K)) 
     for n in range(N):
@@ -30,10 +25,9 @@ def calc_vcov_hc1(gram_inv, reg_covariates, sr_resid, resid_dof):
     
     vcov_hc0 = gram_inv @ vcov_hc0 @ gram_inv.T
     vcov_hc1 = (N/resid_dof) * vcov_hc0
-    return vcov_hc1
+    return make_matrix_psd(vcov_hc1)
 
 
-# Bottleneck: Finding uniques and indices for them
 def calc_meat_oneway(reg_covariates, resid, clust_df, oneway_dof_adj=True):
     moments = np.multiply(reg_covariates, resid)
     
@@ -72,4 +66,4 @@ def calc_vcov_clust_multiway(bread, reg_covariates, resid, resid_dof, clust_df, 
         M_min = min(clust_Ms)
         vcov_clust_multiway = (M_min/(M_min-1)) * vcov_clust_multiway
         
-    return vcov_clust_multiway
+    return make_matrix_psd(vcov_clust_multiway)
