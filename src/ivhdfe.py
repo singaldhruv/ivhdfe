@@ -1,9 +1,9 @@
 import pandas as pd
 import numpy as np
 
-from panel_data import PanelData
-from solvers import tsls_solve, fe_solve
-from vcov import calc_vcov_iid, calc_vcov_hc1, calc_vcov_clust_multiway, calc_std
+from src.panel_data import PanelData
+from src.solvers import tsls_solve, fe_solve
+from src.vcov import calc_vcov_iid, calc_vcov_hc1, calc_vcov_clust_multiway, calc_std
 
 def ivhdfe(df, output, 
         endog_vars=[],

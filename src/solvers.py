@@ -2,8 +2,8 @@ import numpy as np
 import scipy as sp
 import pandas as pd
 
-from fixed_effects import demean_FE
-from vcov import calc_vcov_iid, calc_vcov_hc1
+from src.fixed_effects import demean_FE
+from src.vcov import calc_vcov_iid, calc_vcov_hc1
 
 # Use QR decomposition to first get Xq @ Xr = X
 # If no y is provided, just returns (X'X)^-1

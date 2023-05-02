@@ -1,8 +1,6 @@
 import numpy as np
 import pandas as pd
 
-import itertools
-
 class PanelData:
     def __init__(self, orig_df, output=None, endog_vars=[], 
                 instruments=[], controls=[], 
@@ -31,10 +29,28 @@ class PanelData:
         df, uni_cat_cols, fe_cols, clust_cols = check_cat_cols(df, fixed_effects, se_clusters)
         self.uni_cat_cols = uni_cat_cols
         
+        # Check if any design column is constant and drop it
+        constant_cols = []
+        for col in cts_cols + uni_cat_cols:
+                if np.isclose(df[col].std() / df[col].mean(), 0):
+                    constant_cols.append(col)
+                    if col in cts_cols:
+                        cts_cols.remove(col)
+                    if col in uni_cat_cols:
+                        uni_cat_cols.remove(col)
+                    if col in fe_cols:
+                        fe_cols.remove(col)
+                    if col in clust_cols:
+                        clust_cols.remove(col)
+        if constant_cols != []:
+            df = df.drop(constant_cols, axis=1)
+            print(f'Dropped constant columns: {" ".join(constant_cols)}')
+            
         # Subset to useful columns
-        # Drop observations with NA or Inf in any of the useful columns
         useful_cols = [output] + cts_cols + uni_cat_cols
         df = df[useful_cols].copy()
+        
+        # Drop observations with NA or Inf in any of the useful columns
         for col in uni_cat_cols:
             df[col] = df[col].astype('category')
             df[col] = df[col].cat.codes
@@ -44,11 +60,11 @@ class PanelData:
         if temp_size > df.shape[0]:
             print(f'Dropped {temp_size - df.shape[0]:,d} observations with NA or Inf')
         
+
         # Add a constant if needed 
         if (fe_cols == []) and (skip_constant == False):
             df['_constant'] = 1
             cts_cols = ['_constant'] + cts_cols
-        # TODO: check if any cts column is constant and drop it
             
         # Iterate for checking collinearity in cts columns and 
         # Singletons in FE until convergence
@@ -57,10 +73,10 @@ class PanelData:
         while any_change:
             any_change = False
             prev_size = df.shape[0]
-            df, cts_cols = check_collinear(df, cts_cols)
-            df, clust_column_labels = create_cat_levels(df, clust_cols, 'clust', remove_singletons=False)
+            df, cts_cols = make_collinear(df, cts_cols)
+            df, clust_column_labels = create_cat_levels(df, clust_cols, 'clust', drop_singletons=False)
             temp_size = df.shape[0]
-            df, fe_column_labels = create_cat_levels(df, fe_cols, 'fe', remove_singletons=True)
+            df, fe_column_labels = create_cat_levels(df, fe_cols, 'fe', drop_singletons=True)
             singletons_dropped += (temp_size - df.shape[0])
             if df.shape[0] < prev_size:
                 any_change = True
@@ -101,6 +117,8 @@ class PanelData:
             
         self.initialize_fixed_effects(fe_column_labels)
         self.initialize_clusters(clust_column_labels)
+        for fe_col in fe_column_labels:
+            print(fe_col, self.levels_FE[self.fixed_effects.index(fe_col)])
         
     #################
     # Fixed effects #
@@ -125,57 +143,30 @@ class PanelData:
         self.levels_FE = np.max(self.FE_matrix, axis=0) + 1
         
         # Remove redundant FE levels and adjust N_FE
-        if False:
-            # Remove partitioned FEs and adjust N_FE
-            # For each FE group, store the partitioned FE levels (i.e., can be normalized to zero wlog)
-            # Also store the group and levels which partition these coarse levels
-            self.partitioned_FE = [dict() for c in range(self.groups_FE)]
-            for (coarse_fe, fine_fe) in itertools.permutations(range(self.FE_matrix.shape[1]), 2):
-                curr_partition_df = find_partitioned_levels(self.FE_matrix[:,fine_fe][:,np.newaxis], self.FE_matrix[:,coarse_fe][:,np.newaxis])
-                curr_partition_df = curr_partition_df.groupby('coarse').agg({'fine': (lambda x: (fine_fe, list(x)))}).reset_index()
-                print(coarse_fe, fine_fe, curr_partition_df)
-                curr_coarse_partitioned_levels = curr_partition_df['coarse'].values
-                for curr_coarse_fe_level in curr_coarse_partitioned_levels:
-                    curr_fine_fe_levels = curr_partition_df[curr_partition_df['coarse'] == coarse_level]['fine'].values[0]
-                    if curr_coarse_fe_level in self.partitioned_FE[coarse_fe].keys():
-                        self.partitioned_FE[coarse_fe][curr_coarse_fe_level][fine_fe] = curr_fine_fe_levels
-                    else:
-                        self.partitioned_FE[coarse_fe][curr_coarse_fe_level] = {fine_fe: curr_fine_levels}
-                        self.N_FE -= 1
-            # One arbitrary non-partitioned level of each FE group (after the first FE group) is redundant
-            self.redundant_FE = np.zeros((self.groups_FE,)).astype(int)
-            for c in range(1, self.groups_FE): 
-                c_partitioned_levels = self.partitioned_FE[c].keys()
-                if (len(c_partitioned_levels) < self.levels_FE[c]):
-                    # Only remove one level if 
-                    # All the FE levels are not partitioned
-                    self.redundant_FE[c] = 1
-            self.N_FE -= self.redundant_FE.sum()
-        else:
-            self.redundant_FE = np.zeros((self.groups_FE,), dtype=int)
-            for c1 in range(self.groups_FE):
-                for c2 in range(c1+1, self.groups_FE):
-                    curr_bipartite_df = find_grouped_subgraphs(self.FE_matrix[:,c1][:,np.newaxis], self.FE_matrix[:,c2][:,np.newaxis])
-                    curr_groups = int(curr_bipartite_df['group'].max()+1)
-                    self.redundant_FE[c2] = max(self.redundant_FE[c2], curr_groups)
-                    self.redundant_FE[c2] = min(self.redundant_FE[c2], self.levels_FE[c2])
+        self.redundant_FE = np.zeros((self.groups_FE,), dtype=int)
+        for c1 in range(self.groups_FE):
+            for c2 in range(c1+1, self.groups_FE):
+                curr_bipartite_df = find_grouped_subgraphs(self.FE_matrix[:,c1][:,np.newaxis], self.FE_matrix[:,c2][:,np.newaxis])
+                curr_groups = int(curr_bipartite_df['group'].max()+1)
+                self.redundant_FE[c2] = max(self.redundant_FE[c2], curr_groups)
+                self.redundant_FE[c2] = min(self.redundant_FE[c2], self.levels_FE[c2])
         
         temp_fe_groups = list(range(self.groups_FE))
-        removed_so_far = 0
+        groups_dropped = []
         for c in temp_fe_groups:
-            c_idx = c - removed_so_far
+            c_idx = c - len(groups_dropped)
             # If all levels are redundant levels:
-            # Remove the FE group
-            c_removed_levels = self.redundant_FE[c_idx]
-            if c_removed_levels == self.levels_FE[c_idx]:
-                print(f'Removing redundant FE group {tuple(fe_column_labels[c_idx][3:].split("#"))}')
+            # Drop the FE group
+            if self.redundant_FE[c_idx] == self.levels_FE[c_idx]:
                 del self.fixed_effects[c_idx]
                 self.FE_matrix = np.delete(self.FE_matrix, c_idx, axis=1)
                 self.groups_FE = self.FE_matrix.shape[1]
                 self.levels_FE = np.max(self.FE_matrix, axis=0) + 1
                 self.redundant_FE = np.delete(self.redundant_FE, c_idx)
-                removed_so_far += 1
-                
+                groups_dropped.append(tuple(fe_column_labels[c_idx][3:].split("#")))
+        if len(groups_dropped) > 0:
+            print(f'Dropped redundant FE groups: {"_".join(groups_dropped)}')
+        
         # Number of identified FE levels (degrees of freedom lost)
         self.N_FE = self.levels_FE.sum() - self.redundant_FE.sum()
         
@@ -240,7 +231,7 @@ def check_cts_cols(df, output, combined_cts_cols, cts_col_types):
                 dup_cols.append((col, curr_cols_type))
     return df, cts_cols, dup_cols
 
-def check_collinear(df, cts_cols):
+def make_collinear(df, cts_cols):
     if len(cts_cols) == 0:
         return df, cts_cols
     orthogonal_cols = [cts_cols[0]]
@@ -256,8 +247,8 @@ def check_collinear(df, cts_cols):
             full_rank_matrix = temp_matrix
             
     if collinear_cols != []: 
-        print(f'Skipping collinear: {collinear_cols}')
-    return df, orthogonal_cols
+        print(f'Dropped collinear: {" ".join(collinear_cols)}')
+    return df.drop(collinear_cols, axis=1), orthogonal_cols
 
 ###################################
 # Helpers for categorical columns #
@@ -391,13 +382,13 @@ def factorize(df, curr_cat, cat_tag):
     df[curr_cat_label] = codes
     return df, curr_cat_label
 
-def create_cat_levels(df, curr_cat_cols, cat_tag='cat', remove_singletons=True):
+def create_cat_levels(df, curr_cat_cols, cat_tag='cat', drop_singletons=True):
     cat_labels = []
     for curr_cat in curr_cat_cols:
         df, curr_cat_label = factorize(df, curr_cat, cat_tag)
         
-        # Remove singletons and refactorize
-        if remove_singletons: 
+        # Drop singletons and refactorize
+        if drop_singletons: 
             curr_counts = df[curr_cat_label].value_counts()
             non_singletons = curr_counts[curr_counts > 1].index
             df = df.loc[df[curr_cat_label].isin(non_singletons), :].reset_index(drop=True)

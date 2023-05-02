@@ -3,8 +3,8 @@ import pandas as pd
 
 import itertools
 
-from panel_data import factorize
-from linalg_helpers import make_matrix_psd
+from src.panel_data import factorize
+from src.linalg_helpers import make_matrix_psd
 
 def calc_std(vcov):
     std = np.sqrt(np.diag(vcov))
