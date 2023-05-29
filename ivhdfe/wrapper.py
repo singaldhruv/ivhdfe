@@ -1,11 +1,11 @@
 import pandas as pd
 import numpy as np
 
-from panel_data import PanelData
-from solvers import tsls_solve, fe_solve
-from vcov import calc_vcov, calc_std
+from .panel_data import PanelData
+from .solvers import tsls_solve, fe_solve
+from .vcov import calc_vcov, calc_std
 
-def ivhdfe(df, output, 
+def regress(df, output, 
         endog_vars=[],
         instruments=[],
         controls=[],

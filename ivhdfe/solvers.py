@@ -2,8 +2,8 @@ import numpy as np
 import scipy as sp
 import pandas as pd
 
-from fixed_effects import demean_FE
-from vcov import calc_vcov, calc_f_stat
+from .fixed_effects import demean_FE
+from .test_statistics import calc_f_stats
 
 # Use QR decomposition to first get Xq @ Xr = X
 # If no y is provided, just returns (X'X)^-1
@@ -34,23 +34,26 @@ def tsls_solve(X, W, Z, y, iv_params, fe_params=None):
     WZ = np.hstack([W, Z])
     Xhat = np.zeros_like(X)
     resid_first = np.zeros_like(X)
-    resid_first_no_inst = np.zeros_like(X)
     f_stats = np.zeros((X.shape[1],1))
     pi = np.zeros((k, X.shape[1]))
     
     for x_idx in range(X.shape[1]):
         curr_X = X[:,x_idx][:,np.newaxis]
         ret_vals = fe_solve(WZ, curr_X, fe_params)
-        ret_vals_no_inst = fe_solve(W, curr_X, fe_params)
         curr_beta, curr_WZ_gram_inv, curr_Xhat, curr_resid_first, curr_WZ, _ = ret_vals 
         pi[:,x_idx] = np.squeeze(curr_beta[-k:,:])
         Xhat[:,x_idx] = np.squeeze(curr_Xhat)
         resid_first[:,x_idx] = np.squeeze(curr_resid_first)
         
-    f_stats = calc_f_stat(pi, curr_WZ_gram_inv, curr_WZ, 
+    print(calc_f_stats(pi, curr_WZ_gram_inv, curr_WZ, 
+                        resid_first, fs_resid_dof,
+                        vcov_params=vcov_params))
+    
+    f_stats = calc_f_stats(pi, curr_WZ_gram_inv, curr_WZ, 
                         resid_first, fs_resid_dof,
                         vcov_params={'vcov_type': 'iid'})
     f_stats = np.reshape(np.diag(f_stats), (1,-1))
+    
     
     WXhat = np.hstack([W, Xhat])
     if fe_params is None: 
